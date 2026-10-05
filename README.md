@@ -20,4 +20,4 @@ A personal workout and protein tracker that runs offline on an iPhone. All data 
 
 ## Backups
 
-The app stores data only on your phone. Use **Settings → Export backup** now and then and save the file to Files or iCloud Drive..
+The app stores data only on your phone. Use **Settings → Export backup** now and then and save the file to Files or iCloud Drive.
