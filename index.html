@@ -580,6 +580,7 @@ function viewFood() {
 
     <h2>Search foods</h2>
     <div class="row"><input id="fq" type="search" placeholder="e.g. Chobani, Quest bar" value="${esc(search.q)}" enterkeyhint="search">
+      <button class="ghost" data-act="fclear" aria-label="Clear search" style="font-size:18px;padding:8px 10px">✕</button>
       <button class="primary" data-act="fsearch">Search</button></div>
     <p class="muted">Needs internet. Searches Open Food Facts, then USDA. Can't find it? Tap <b>+ New food</b> below.</p>
     ${search.state === 'loading' ? '<p class="muted">Searching…</p>' : search.state ? `<p class="muted">${esc(search.state)}</p>` : ''}
@@ -995,6 +996,7 @@ document.addEventListener('click', ev => {
     }
     case 'sclose': closeSheet(); break;
     case 'fsearch': runSearch(); break;
+    case 'fclear': search = { q: '', state: '', results: [] }; render(); break;
     case 'wsave': {
       const lb = num(document.getElementById('wlb').value);
       if (lb <= 0) { toast('Enter your weight in lb'); break; }
