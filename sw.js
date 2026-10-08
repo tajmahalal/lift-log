@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION whenever you change any app file.
-const VERSION = 'liftlog-v28';
+const VERSION = 'liftlog-v31';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png', './zxing.min.js'];
 
 self.addEventListener('install', e => {

@@ -1461,8 +1461,23 @@ if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) {
   addEventListener('load', () => setTimeout(() => { scrollTo(0, 1); scrollTo(0, 0); }, 60));
 }
 
+// Auto-update: check for a new version on open and when returning to the app.
+// When the new version takes over, reload once so it shows right away.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // skip on first install, and while there are unsaved edits (it applies next open instead)
+    if (!hadController || reloading || (ED && ED.dirty) || document.getElementById('sheet').classList.contains('show')) return;
+    reloading = true;
+    try { sessionStorage.setItem('liftlog-updated', '1'); } catch (e) {}
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  try { if (sessionStorage.getItem('liftlog-updated')) { sessionStorage.removeItem('liftlog-updated'); setTimeout(() => toast('✅ App updated'), 300); } } catch (e) {}
 }
 </script>
 </body>
