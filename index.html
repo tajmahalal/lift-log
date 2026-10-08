@@ -109,6 +109,9 @@
   input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; }
   .ctl { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
   .ctl .grow { flex: 1; }
+  .scanbox { position: relative; border-radius: 14px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; margin: 8px 0; }
+  .scanbox video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .scanline { position: absolute; left: 10%; right: 10%; top: 50%; height: 2px; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
   .pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .pick button { text-align: left; padding: 10px 12px; font-size: 15px; }
   .h2row { display: flex; align-items: center; justify-content: space-between; margin: 20px 0 8px; }
@@ -653,6 +656,7 @@ function viewFood() {
     <h2>Search foods</h2>
     <div class="row"><input id="fq" type="search" placeholder="e.g. Chobani, Quest bar" value="${esc(search.q)}" enterkeyhint="search">
       <button class="primary" data-act="fsearch">Search</button></div>
+    <button data-act="scan" style="width:100%;margin-top:8px">📷 Scan barcode</button>
     <p class="muted">Needs internet. Searches Open Food Facts, then USDA. Can't find it? Tap <b>+ New food</b> below.</p>
     ${search.state === 'loading' ? '<p class="muted">Searching…</p>' : search.state ? `<p class="muted">${esc(search.state)}</p>` : ''}
     ${search.results.length ? `<div class="card"><ul class="list">${search.results.map((f, i) => `<li data-act="spick" data-i="${i}" style="cursor:pointer">
@@ -935,7 +939,7 @@ function openHistory() {
 // ----- food sheet -----
 let sheetFood = null, sheetSrc = '';
 function openSheet(html) { const b = document.getElementById('sheetbox'); b.innerHTML = html; addClears(b); b.scrollTop = 0; document.getElementById('sheet').classList.add('show'); }
-function closeSheet() { document.getElementById('sheet').classList.remove('show'); sheetFood = null; sheetEntry = null; picker = null; }
+function closeSheet() { stopScanner(); document.getElementById('sheet').classList.remove('show'); sheetFood = null; sheetEntry = null; picker = null; }
 const scaled = (f, amt) => { const m = f.unit === 'g' ? amt / 100 : amt;
   return { kcal: f.kcal * m, p: f.p * m, c: f.c * m, f: f.f * m }; };
 
@@ -1002,6 +1006,28 @@ function saveForm() {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const searchCache = {};
 
+// Open Food Facts product -> food (values per 100 g), or null if nutrition is missing.
+function offMap(x) {
+  const n = x.nutriments || {};
+  const kcal = n['energy-kcal_100g'] ?? (n['energy_100g'] != null ? n['energy_100g'] / 4.184 : null);
+  if (!x.product_name || n.proteins_100g == null || kcal == null) return null;
+  const brand = (x.brands || '').split(',')[0].trim();
+  return { id: 'off-' + (x.code || uid()), name: x.product_name.trim() + (brand ? ` (${brand})` : ''), unit: 'g', label: '',
+    kcal: num(kcal), p: num(n.proteins_100g), c: num(n.carbohydrates_100g), f: num(n.fat_100g),
+    serving: num(x.serving_quantity) >= 5 ? num(x.serving_quantity) : null }; // tiny values are bad data (e.g. "1" bar)
+}
+// USDA item -> food (values per 100 g), or null if nutrition is missing.
+function usdaMap(x) {
+  const tc = s => s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  const v = id => { const n = (x.foodNutrients || []).find(n => n.nutrientId === id); return n ? n.value : null; };
+  const kcal = v(1008) ?? v(2047) ?? v(2048), p = v(1003);
+  if (kcal == null || p == null) return null;
+  const brand = x.brandName || x.brandOwner;
+  const serving = x.servingSizeUnit && /^g|grm$/i.test(x.servingSizeUnit) ? num(x.servingSize) : null;
+  return { id: 'fdc-' + x.fdcId, name: tc(x.description) + (brand ? ` (${tc(brand)})` : ''), unit: 'g', label: '',
+    kcal: num(kcal), p: num(p), c: num(v(1005)), f: num(v(1004)), serving: serving >= 5 ? serving : null };
+}
+
 async function offSearch(q) {
   const url = 'https://world.openfoodfacts.org/cgi/search.pl?' + new URLSearchParams({
     search_terms: q, search_simple: 1, action: 'process', json: 1, page_size: 30,
@@ -1010,15 +1036,7 @@ async function offSearch(q) {
     await sleep(wait);
     try {
       const r = await fetch(url);
-      if (r.ok) return ((await r.json()).products || []).map(x => {
-        const n = x.nutriments || {};
-        const kcal = n['energy-kcal_100g'] ?? (n['energy_100g'] != null ? n['energy_100g'] / 4.184 : null);
-        if (!x.product_name || n.proteins_100g == null || kcal == null) return null;
-        const brand = (x.brands || '').split(',')[0].trim();
-        return { id: 'off-' + (x.code || uid()), name: x.product_name.trim() + (brand ? ` (${brand})` : ''), unit: 'g', label: '',
-          kcal: num(kcal), p: num(n.proteins_100g), c: num(n.carbohydrates_100g), f: num(n.fat_100g),
-          serving: num(x.serving_quantity) || null };
-      }).filter(Boolean);
+      if (r.ok) return ((await r.json()).products || []).map(offMap).filter(Boolean);
     } catch (e) { if (!navigator.onLine) throw new Error('offline'); }
   }
   throw new Error('busy');
@@ -1029,16 +1047,83 @@ async function usdaSearch(q) {
     api_key: S.settings.usdaKey || 'DEMO_KEY', query: q, pageSize: 30, requireAllWords: true });
   const r = await fetch(url);
   if (!r.ok) throw new Error('busy');
-  const tc = s => s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-  return ((await r.json()).foods || []).map(x => {
-    const v = id => { const n = (x.foodNutrients || []).find(n => n.nutrientId === id); return n ? n.value : null; };
-    const kcal = v(1008) ?? v(2047) ?? v(2048), p = v(1003);
-    if (kcal == null || p == null) return null;
-    const brand = x.brandName || x.brandOwner;
-    const serving = x.servingSizeUnit && /^g|grm$/i.test(x.servingSizeUnit) ? num(x.servingSize) : null;
-    return { id: 'fdc-' + x.fdcId, name: tc(x.description) + (brand ? ` (${tc(brand)})` : ''), unit: 'g', label: '',
-      kcal: num(kcal), p: num(p), c: num(v(1005)), f: num(v(1004)), serving: serving || null };
-  }).filter(Boolean);
+  return ((await r.json()).foods || []).map(usdaMap).filter(Boolean);
+}
+
+// ----- barcode scanner -----
+// Camera decoding uses ZXing (zxing.min.js, stored with the app). Lookup: Open Food Facts
+// product API (100/min per device), then USDA branded foods as a backup.
+let scanner = null;
+const loadZxing = () => window.ZXing ? Promise.resolve() : new Promise((res, rej) => {
+  const el = document.createElement('script');
+  el.src = 'zxing.min.js'; el.onload = res; el.onerror = () => rej(new Error('lib'));
+  document.head.append(el);
+});
+const scanMsg = t => { const el = document.getElementById('scanmsg'); if (el) el.textContent = t; };
+
+async function openScanner() {
+  openSheet(`<div class="row"><h3 class="grow">Scan barcode</h3><button class="ghost" data-act="sclose">Cancel</button></div>
+    <div class="scanbox"><video id="scanvid" playsinline muted autoplay></video><div class="scanline"></div></div>
+    <p class="muted" id="scanmsg">Starting camera…</p>
+    <label>Or type the number under the barcode</label>
+    <div class="row"><input id="bcode" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 012345678905">
+      <button class="primary" data-act="bcode-go">Look up</button></div>`);
+  try {
+    await loadZxing();
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,
+      ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E'].map(f => ZXing.BarcodeFormat[f]));
+    const reader = new ZXing.BrowserMultiFormatReader(hints, 250);
+    scanner = reader;
+    await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, 'scanvid', result => {
+      if (result && scanner === reader) { stopScanner(); lookupBarcode(result.getText()); }
+    });
+    if (scanner === reader) scanMsg('Point the camera at the barcode and hold steady.');
+  } catch (e) {
+    stopScanner();
+    scanMsg(e && e.name === 'NotAllowedError'
+      ? 'Camera access is blocked. Allow the camera for this app (iPhone Settings → Safari → Camera), or type the number below.'
+      : e && e.message === 'lib' ? "The scanner couldn't load. Type the number below."
+      : 'No camera available. Type the number below.');
+  }
+}
+function stopScanner() { if (scanner) { try { scanner.reset(); } catch (e) {} scanner = null; } }
+
+async function offProduct(code) {
+  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=code,product_name,brands,nutriments,serving_quantity`;
+  for (const wait of [0, 600, 1200]) {
+    await sleep(wait);
+    try {
+      const r = await fetch(url);
+      if (r.status === 404) return null; // not in their database
+      if (r.ok) { const j = await r.json(); return j.status === 1 && j.product ? offMap(j.product) : null; }
+    } catch (e) { if (!navigator.onLine) throw new Error('offline'); }
+  }
+  return null;
+}
+async function usdaBarcode(code) {
+  const strip = c => String(c || '').replace(/^0+/, '');
+  const url = 'https://api.nal.usda.gov/fdc/v1/foods/search?' + new URLSearchParams({
+    api_key: S.settings.usdaKey || 'DEMO_KEY', query: strip(code), dataType: 'Branded', pageSize: 10 });
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  const hit = ((await r.json()).foods || []).find(x => strip(x.gtinUpc) === strip(code));
+  return hit ? usdaMap(hit) : null;
+}
+async function lookupBarcode(raw) {
+  const code = String(raw || '').replace(/\D/g, '');
+  if (code.length < 8) { toast('Enter the full number under the barcode'); return; }
+  closeSheet(); toast(`Looking up ${code}…`, 10000);
+  let f = searchCache['#' + code] || null;
+  if (!f) {
+    try { f = await offProduct(code); }
+    catch (e) { toast("You're offline. Barcode lookup needs internet.", 3500); return; }
+    if (!f) { try { f = await usdaBarcode(code); } catch (e) {} }
+    if (f) searchCache['#' + code] = f;
+  }
+  if (!f) { toast(`Barcode ${code} isn't in the food databases. Add it as a new food.`, 4000); openForm(null); return; }
+  toast(`Found: ${f.name}`, 2500);
+  openAdd(f, 'search');
 }
 
 async function runSearch() {
@@ -1227,6 +1312,8 @@ document.addEventListener('click', ev => {
     }
     case 'sclose': closeSheet(); break;
     case 'fsearch': runSearch(); break;
+    case 'scan': openScanner(); break;
+    case 'bcode-go': lookupBarcode(document.getElementById('bcode').value); break;
     case 'wsave': {
       const lb = num(document.getElementById('wlb').value);
       if (lb <= 0) { toast('Enter your weight in lb'); break; }
@@ -1355,6 +1442,7 @@ document.addEventListener('keydown', ev => {
   if (ev.target.id === 'fq') { ev.preventDefault(); ev.target.blur(); runSearch(); }
   if (ev.target.id === 'amt') document.querySelector('[data-act="fadd"]').click();
   if (ev.target.id === 'eamt') document.querySelector('[data-act="esave"]').click();
+  if (ev.target.id === 'bcode') document.querySelector('[data-act="bcode-go"]').click();
   if (ev.target.id === 'nx-name') document.querySelector('[data-act="pnew"]').click();
   if (ev.target.id === 'wlb') document.querySelector('[data-act="wsave"]').click();
 });

@@ -23,3 +23,11 @@ ITS USE. IT IS NOT MEDICAL, NUTRITIONAL OR FITNESS ADVICE.
 
 For permission requests, contact the copyright holder through GitHub:
 https://github.com/tajmahalal
+
+-------------------------------------------------------------------------------
+Third-party software
+
+zxing.min.js is ZXing for JavaScript (@zxing/library 0.21.3),
+Copyright the ZXing authors, licensed under the Apache License 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). It is not covered by the
+"all rights reserved" terms above.

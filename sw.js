@@ -1,6 +1,6 @@
 // Offline cache. Bump VERSION whenever you change any app file.
-const VERSION = 'liftlog-v26';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
+const VERSION = 'liftlog-v28';
+const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png', './zxing.min.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
