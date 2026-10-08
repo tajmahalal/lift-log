@@ -94,9 +94,23 @@
   .foods button.new { border: 1px dashed var(--line); background: transparent; color: var(--accent); text-align: center; }
   .foods.reorder button { display: flex; align-items: center; gap: 6px; border: 1px dashed var(--line); cursor: default; }
   .foods.reorder button:active { opacity: 1; }
-  .foods .handle { touch-action: none; user-select: none; -webkit-user-select: none; color: var(--muted);
+  .reorder .handle { touch-action: none; user-select: none; -webkit-user-select: none; color: var(--muted);
     font-size: 22px; padding: 6px 4px 6px 8px; cursor: grab; }
-  .foods button.lifted { opacity: .55; outline: 2px solid var(--accent); }
+  .reorder .lifted { opacity: .55; outline: 2px solid var(--accent); }
+  .exrow { display: flex; align-items: center; gap: 8px; background: var(--card2); border: 1px dashed var(--line);
+    border-radius: 10px; padding: 6px 4px 6px 12px; margin: 6px 0; }
+  /* clear (✕) button inside text boxes */
+  .clr { position: relative; display: block; flex: 1 1 auto; min-width: 0; }
+  .clr > input { padding-right: 28px; }
+  .set .clr > input, .ex-edit .clr > input { padding-left: 4px; padding-right: 20px; }
+  .clrx { position: absolute; right: 1px; top: 50%; transform: translateY(-50%); background: none; border: 0;
+    color: var(--muted); font-size: 14px; padding: 6px 6px; line-height: 1; }
+  .clr > input:placeholder-shown + .clrx { display: none; }
+  input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; }
+  .ctl { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+  .ctl .grow { flex: 1; }
+  .pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pick button { text-align: left; padding: 10px 12px; font-size: 15px; }
   .h2row { display: flex; align-items: center; justify-content: space-between; margin: 20px 0 8px; }
   .h2row h2 { margin: 0; }
   .quote { background: linear-gradient(135deg, #2a1f18, #1b1e26); border-left: 3px solid var(--accent);
@@ -187,7 +201,7 @@ const DEFAULT_FOODS = () => [
 
 const fresh = () => ({
   days: DEFAULT_DAYS(), sessions: [], draft: null, weights: [],
-  foods: DEFAULT_FOODS(), food: {}, recent: [],
+  foods: DEFAULT_FOODS(), food: {}, recent: [], extras: [], hiddenEx: [],
   settings: { rest: 120, goals: { kcal: 2500, p: 180, c: 250, f: 70 } },
 });
 
@@ -236,7 +250,45 @@ const r25 = n => Math.round(n / 2.5) * 2.5;
 const fmtW = w => (Math.round(w * 10) / 10).toString();
 const wLabel = w => w === 0 ? 'bodyweight' : `${fmtW(w)} lb`;
 const dayById = id => S.days.find(d => d.id === id);
-const exById = id => { for (const d of S.days) { const e = d.exercises.find(x => x.id === id); if (e) return e; } return null; };
+const exById = id => { for (const d of S.days) { const e = d.exercises.find(x => x.id === id); if (e) return e; }
+  return S.extras.find(x => x.id === id) || null; };
+// "Other exercises" = anything trained that isn't in the split: one-offs added during a workout,
+// plus ones since removed from the split. Kept in S.extras, one entry per name.
+const nameKey = n => (n || '').trim().toLowerCase();
+const otherExercises = () => S.extras;
+const findByName = name => {
+  const k = nameKey(name);
+  for (const d of S.days) { const e = d.exercises.find(x => nameKey(x.name) === k); if (e) return e; }
+  return S.extras.find(x => nameKey(x.name) === k) || null;
+};
+
+// Merge same-named exercises and adopt any trained exercise that has no home, so every
+// exercise appears once and its whole history stays together.
+function normalizeExercises() {
+  const canon = new Map(); // name -> id
+  S.days.forEach(d => d.exercises.forEach(e => { if (!canon.has(nameKey(e.name))) canon.set(nameKey(e.name), e.id); }));
+  const splitIds = new Set(S.days.flatMap(d => d.exercises.map(e => e.id)));
+  const remap = new Map(), keep = [];
+  for (const e of S.extras) {
+    if (splitIds.has(e.id)) continue;
+    const id = canon.get(nameKey(e.name));
+    if (id && id !== e.id) { remap.set(e.id, id); continue; }
+    canon.set(nameKey(e.name), e.id); keep.push(e);
+  }
+  S.extras = keep;
+  const known = new Set([...splitIds, ...keep.map(e => e.id), ...S.hiddenEx]);
+  for (const s of S.sessions) for (const en of s.entries) {
+    if (remap.has(en.exId)) en.exId = remap.get(en.exId);
+    if (known.has(en.exId)) continue;
+    const id = canon.get(nameKey(en.name));
+    if (id) { en.exId = id; continue; }
+    const e = { id: en.exId, name: en.name, min: 8, max: 12, inc: 5 };
+    S.extras.push(e); known.add(e.id); canon.set(nameKey(e.name), e.id);
+  }
+  if (S.draft) S.draft.entries.forEach(en => { if (remap.has(en.exId)) en.exId = remap.get(en.exId); });
+  if (progressEx && remap.has(progressEx)) progressEx = remap.get(progressEx);
+  return remap.size > 0;
+}
 
 function toast(msg, ms = 1800) {
   const t = document.getElementById('toast');
@@ -373,7 +425,9 @@ function chart(pts, unit) {
 
 // ---------- views ----------
 function progressSection() {
-  if (!progressEx || !exById(progressEx)) progressEx = S.days.flatMap(d => d.exercises)[0]?.id;
+  const others = otherExercises();
+  const valid = [...S.days.flatMap(d => d.exercises), ...others].map(e => e.id);
+  if (!valid.includes(progressEx)) progressEx = valid[0];
   const h = progressEx ? historyFor(progressEx).reverse() : [];
   const epts = h.map(x => ({ y: topWeight(x.sets), label: short(x.date) }));
   const best = h.reduce((b, x) => Math.max(b, topWeight(x.sets)), 0);
@@ -381,7 +435,9 @@ function progressSection() {
   return `    <h2>Exercise progress</h2>
     <div class="card">
       <select data-in="progress">${S.days.map(d => `<optgroup label="${esc(d.name)}">${d.exercises.map(e =>
-        `<option value="${e.id}" ${e.id === progressEx ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</optgroup>`).join('')}</select>
+        `<option value="${e.id}" ${e.id === progressEx ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</optgroup>`).join('')}
+        ${others.length ? `<optgroup label="Other exercises">${others.map(e =>
+          `<option value="${e.id}" ${e.id === progressEx ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</optgroup>` : ''}</select>
       <p class="muted">Top-set weight per session${h.length ? ` · best ${fmtW(best)} lb · ${h.length} sessions` : ''}</p>
       ${chart(epts, 'lb')}
       ${h.length ? `<ul class="list">${h.slice(-5).reverse().map(x => `<li><span class="muted" style="width:60px">${short(x.date)}</span>
@@ -529,7 +585,15 @@ function viewTrain() {
       ${progressSection()}`;
   }
   const day = dayById(d.dayId);
-  return `<h1>${esc(day ? day.name : 'Workout')}</h1>
+  if (wReorder) return `<h1>${esc(day ? day.name : 'Workout')}</h1>
+    <p class="muted">Drag the ≡ handle to change the order for today. Your split stays the same.</p>
+    <div class="reorder" data-kind="draft">${d.entries.map(en => {
+      const done = en.sets.filter(x => num(x.r) > 0).length;
+      return `<div class="exrow" data-rid="${en.exId}"><span class="grow">${esc(exById(en.exId)?.name || en.name)}
+        <small class="mac" style="display:block">${done}/${en.sets.length} sets logged</small></span><span class="handle" aria-label="Drag to move">≡</span></div>`; }).join('')}</div>
+    <button class="primary big" data-act="wreorder" style="margin-top:10px">Done reordering</button>`;
+  return `<div class="h2row" style="margin-top:8px"><h1 style="margin:0">${esc(day ? day.name : 'Workout')}</h1>
+      <button class="ghost" data-act="wreorder">↕ Reorder</button></div>
     <p class="muted">Tap ✓ after each set to start the rest timer. Empty sets are ignored.</p>
     ${d.entries.map((en, ei) => {
       const e = exById(en.exId) || { name: en.name, min: 8, max: 12 };
@@ -547,8 +611,12 @@ function viewTrain() {
           <button class="chk" data-act="done" data-e="${ei}" data-s="${si}">✓</button>
           <button class="ghost" data-act="rmset" data-e="${ei}" data-s="${si}" aria-label="Remove set">✕</button>
         </div>`).join('')}
-        <button class="ghost" data-act="addset" data-e="${ei}">+ Add set</button>
+        <div class="ctl"><button class="ghost" data-act="addset" data-e="${ei}">+ Add set</button><span class="grow"></span>
+          <button class="ghost" data-act="wswap" data-e="${ei}">⇄ Swap</button>
+          <button class="ghost danger" data-act="wrm" data-e="${ei}">Remove</button></div>
       </div>`; }).join('')}
+    <button data-act="wadd" style="width:100%;margin:4px 0 4px">+ Add exercise</button>
+    <p class="mac" style="text-align:center;margin-bottom:14px">Add, swap or remove changes only today's workout. Your split stays the same.</p>
     <button class="primary big" data-act="finish">Finish workout</button>
     <p style="text-align:center"><button class="ghost danger" data-act="discard">Discard workout</button></p>`;
 }
@@ -563,13 +631,17 @@ const amtText = e => e.unit === 'q' ? 'quick add' : e.unit === 'g' ? `${r1(e.amt
 const pct = (v, g) => Math.min(100, g ? v / g * 100 : 0);
 
 let search = { q: '', state: '', results: [] };
+let foodDate = null; // null = today; otherwise the past day being viewed/edited on the Food tab
+const fday = () => foodDate || dkey();
 let foodReorder = false;
 
 function viewFood() {
-  const G = S.settings.goals, k = dkey(), T = sumDay(k), list = S.food[k] || [];
+  const G = S.settings.goals, k = fday(), isToday = k === dkey(), T = sumDay(k), list = S.food[k] || [];
   return `<h1>Food</h1>
+    ${isToday ? '' : `<div class="tip down row" style="margin-bottom:10px"><span class="grow">Editing <b>${nice(k)}</b>. Anything you add goes to that day.</span>
+      <button class="ghost" data-act="ftoday" style="white-space:nowrap">Back to today</button></div>`}
     <div class="card">
-      <div class="row"><span class="big-num">${r0(T.p)}g</span><span class="muted grow">/ ${G.p}g today</span>
+      <div class="row"><span class="big-num">${r0(T.p)}g</span><span class="muted grow">/ ${G.p}g ${isToday ? 'today' : 'that day'}</span>
         <span class="muted">${T.p >= G.p ? '✅ Hit!' : `${r0(G.p - T.p)}g to go`}</span></div>
       <div class="bar ${T.p >= G.p ? 'hit' : ''}"><div style="width:${pct(T.p, G.p)}%"></div></div>
       <div class="chips">${[10, 20, 25, 30, 40, 50].map(g => `<button data-act="qadd" data-g="${g}">+${g}</button>`).join('')}</div>
@@ -580,7 +652,6 @@ function viewFood() {
 
     <h2>Search foods</h2>
     <div class="row"><input id="fq" type="search" placeholder="e.g. Chobani, Quest bar" value="${esc(search.q)}" enterkeyhint="search">
-      <button class="ghost" data-act="fclear" aria-label="Clear search" style="font-size:18px;padding:8px 10px">✕</button>
       <button class="primary" data-act="fsearch">Search</button></div>
     <p class="muted">Needs internet. Searches Open Food Facts, then USDA. Can't find it? Tap <b>+ New food</b> below.</p>
     ${search.state === 'loading' ? '<p class="muted">Searching…</p>' : search.state ? `<p class="muted">${esc(search.state)}</p>` : ''}
@@ -592,14 +663,15 @@ function viewFood() {
     <div class="h2row"><h2>My foods</h2>
       <button class="${foodReorder ? 'primary' : 'ghost'}" data-act="freorder">${foodReorder ? 'Done' : '↕ Reorder'}</button></div>
     ${foodReorder ? `<p class="muted">Drag the ≡ handle to move a food.</p>
-    <div class="foods reorder">${S.foods.map(f => `<button data-fid="${f.id}"><span class="grow">${esc(f.name)}<small>${perText(f)} · ${r0(f.p)}g P</small></span><span class="handle" aria-label="Drag to move">≡</span></button>`).join('')}</div>`
+    <div class="foods reorder" data-kind="foods">${S.foods.map(f => `<button data-rid="${f.id}"><span class="grow">${esc(f.name)}<small>${perText(f)} · ${r0(f.p)}g P</small></span><span class="handle" aria-label="Drag to move">≡</span></button>`).join('')}</div>`
     : `<div class="foods">${S.foods.map(f => `<button data-act="fpick" data-id="${f.id}">${esc(f.name)}<small>${perText(f)} · ${r0(f.p)}g P</small></button>`).join('')}
       <button class="new" data-act="fnew">+ New food</button></div>`}
 
-    <h2>Today</h2>
-    <div class="card">${list.length ? `<ul class="list">${list.map((e, i) => `<li><span class="grow">${esc(e.name)} <span class="muted">· ${amtText(e)}</span><br>
-      <span class="mac">${macText(e)}</span></span><button class="ghost" data-act="ldel" data-i="${i}" aria-label="Delete">✕</button></li>`).join('')}</ul>`
-      : '<p class="muted">Nothing logged yet today.</p>'}</div>`;
+    <h2 id="daylog">${isToday ? 'Today' : nice(k)}</h2>
+    <div class="card">${list.length ? `<ul class="list">${list.map((e, i) => `<li><span class="grow" data-act="ledit" data-i="${i}" style="cursor:pointer">${esc(e.name)} <span class="muted">· ${amtText(e)}</span><br>
+      <span class="mac">${macText(e)}</span></span><button class="ghost" data-act="ldel" data-i="${i}" aria-label="Delete">✕</button></li>`).join('')}</ul>
+      <p class="mac" style="margin-top:6px">Tap an item to change the amount.</p>`
+      : `<p class="muted">Nothing logged ${isToday ? 'yet today' : 'that day'}.</p>`}</div>`;
 }
 
 function viewPersonal() {
@@ -640,10 +712,10 @@ function viewPersonal() {
     </div>
 
     <h2>Last 7 days</h2>
-    <div class="card">${days.map(d => `<div class="row" style="margin:6px 0"><span style="width:84px" class="muted">${nice(d.key).replace(/,.*/, '')} ${short(d.key)}</span>
+    <div class="card">${days.map(d => `<div class="row" data-act="fday" data-k="${d.key}" style="margin:2px 0;padding:6px 0;cursor:pointer"><span style="width:84px" class="muted">${nice(d.key).replace(/,.*/, '')} ${short(d.key)}</span>
       <div class="bar grow ${d.t.p >= G.p ? 'hit' : ''}"><div style="width:${pct(d.t.p, G.p)}%"></div></div>
-      <span style="width:104px;text-align:right;font-size:14px">${r0(d.t.p)}g · ${r0(d.t.kcal)}</span></div>`).join('')}
-      <p class="mac" style="text-align:right">protein · calories</p></div>
+      <span style="width:96px;text-align:right;font-size:14px">${r0(d.t.p)}g · ${r0(d.t.kcal)}</span><span class="muted">›</span></div>`).join('')}
+      <p class="mac" style="text-align:right">protein · calories · tap a day to view or edit</p></div>
 
     <h2>Daily goals</h2>
     <div class="card">
@@ -653,7 +725,10 @@ function viewPersonal() {
       </div>
       <button data-act="goals" style="margin-top:10px;width:100%">Save goals</button>
       <p class="muted">Common protein target: about 0.7–1 g per lb of bodyweight.</p>
-    </div>`;
+    </div>
+
+    <h2>Food history</h2>
+    <button class="big" data-act="fhist">📅 All-time food log</button>`;
 }
 
 function viewMore() {
@@ -662,10 +737,9 @@ function viewMore() {
     <h2>Your split</h2>
     <p class="muted">Edit exercises, rep ranges, and how much weight to add (+lb) when you hit the top of the range.</p>
     ${S.days.map((d, di) => `<details class="card" ${di === openDay ? 'open' : ''}><summary>${esc(d.name)} · ${d.exercises.length} exercises</summary>
-      ${di === reorderDay ? `<p class="muted">Use ↑ ↓ to set the order exercises appear in your workout.</p>
-      <ul class="list">${d.exercises.map((e, ei) => `<li><span class="muted" style="width:20px">${ei + 1}</span><span class="grow">${esc(e.name)}</span>
-        <button data-act="exmove" data-d="${di}" data-x="${ei}" data-dir="-1" ${ei === 0 ? 'disabled style="opacity:.3"' : ''} aria-label="Move up">↑</button>
-        <button data-act="exmove" data-d="${di}" data-x="${ei}" data-dir="1" ${ei === d.exercises.length - 1 ? 'disabled style="opacity:.3"' : ''} aria-label="Move down">↓</button></li>`).join('')}</ul>
+      ${di === reorderDay ? `<p class="muted">Drag the ≡ handle to move an exercise.</p>
+      <div class="reorder" data-kind="ex" data-d="${di}">${d.exercises.map(e => `<div class="exrow" data-rid="${e.id}">
+        <span class="grow">${esc(e.name)}</span><span class="handle" aria-label="Drag to move">≡</span></div>`).join('')}</div>
       <button class="primary" data-act="reorder" data-d="${di}" style="margin-top:8px;width:100%">Done reordering</button>
     </details>` : `
       <input value="${esc(d.name)}" data-in="dayname" data-d="${di}" style="margin:8px 0">
@@ -679,6 +753,20 @@ function viewMore() {
       <div class="row" style="margin-top:6px"><button data-act="exadd" data-d="${di}">+ Add exercise</button>
         <button data-act="reorder" data-d="${di}">↕ Reorder</button></div>
     </details>`}`).join('')}
+
+    <h2>Other exercises</h2>
+    <p class="muted">Exercises outside your split, like ones you added during a workout. Add some here to have them ready to pick.</p>
+    <div class="card">
+      ${S.extras.length ? `<div class="ex-edit"><span class="lbl" style="text-align:left">Exercise</span><span class="lbl">min</span><span class="lbl">max</span><span class="lbl">+lb</span><span></span></div>
+      ${S.extras.map((e, xi) => `<div class="ex-edit">
+        <input value="${esc(e.name)}" data-in="xname" data-x="${xi}">
+        <input inputmode="numeric" pattern="[0-9]*" value="${e.min}" data-in="xmin" data-x="${xi}">
+        <input inputmode="numeric" pattern="[0-9]*" value="${e.max}" data-in="xmax" data-x="${xi}">
+        <input inputmode="decimal" value="${e.inc}" data-in="xinc" data-x="${xi}">
+        <button class="ghost danger" data-act="xdel" data-x="${xi}" aria-label="Delete exercise">✕</button></div>`).join('')}`
+      : '<p class="muted">None yet.</p>'}
+      <button data-act="xadd" style="margin-top:6px">+ Add exercise</button>
+    </div>
 
     <h2>Workout history</h2>
     <div class="card">${S.sessions.length ? `<ul class="list">${S.sessions.slice(-20).reverse().map(s => `<li>
@@ -716,21 +804,72 @@ function viewMore() {
     </div>`;
 }
 
+// Put a small ✕ inside every text box for one-tap clearing (shown only when the box has text).
+function addClears(root) {
+  root.querySelectorAll('input:not([type=date]):not([type=file]):not([type=checkbox]):not([type=radio])').forEach(inp => {
+    if (inp.parentElement.classList.contains('clr')) return;
+    if (!inp.placeholder) inp.placeholder = ' ';
+    const w = document.createElement('span'); w.className = 'clr';
+    inp.replaceWith(w); w.append(inp);
+    const x = document.createElement('button');
+    x.type = 'button'; x.className = 'clrx'; x.tabIndex = -1; x.setAttribute('aria-label', 'Clear'); x.textContent = '✕';
+    w.append(x);
+  });
+}
+
 function render() {
   const v = { train: viewTrain, food: viewFood, personal: viewPersonal, more: viewMore }[tab];
-  document.getElementById('app').innerHTML = v();
+  const app = document.getElementById('app');
+  app.innerHTML = v();
+  addClears(app);
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
 }
 
 // ---------- actions ----------
+function makeEntry(e) {
+  const s = suggest(e);
+  return { exId: e.id, name: e.name, tip: s.text, kind: s.kind, target: s.reps,
+    sets: Array.from({ length: 3 }, () => ({ w: s.w === '' ? '' : s.w, r: '', done: false })) };
+}
 function startWorkout(dayId) {
   const day = dayById(dayId);
-  S.draft = { dayId, started: Date.now(), entries: day.exercises.map(e => {
-    const s = suggest(e);
-    return { exId: e.id, name: e.name, tip: s.text, kind: s.kind, target: s.reps,
-      sets: Array.from({ length: 3 }, () => ({ w: s.w === '' ? '' : s.w, r: '', done: false })) };
-  }) };
+  S.draft = { dayId, started: Date.now(), entries: day.exercises.map(makeEntry) };
   save(); render(); window.scrollTo(0, 0);
+}
+
+// Pick an exercise to add to (or swap into) today's workout only.
+let picker = null; // { mode: 'add' | 'swap', ei }
+let wReorder = false; // reordering today's workout
+function openPicker(mode, ei) {
+  picker = { mode, ei };
+  const inUse = new Set(S.draft.entries.map(en => en.exId));
+  const btns = list => list.filter(e => !inUse.has(e.id)).map(e =>
+    `<button data-act="ppick" data-id="${e.id}">${esc(e.name)}</button>`).join('');
+  const groups = S.days.map(d => [d.name, btns(d.exercises)]);
+  groups.push(['Your other exercises', btns(S.extras)]);
+  const cur = mode === 'swap' ? S.draft.entries[ei].name : '';
+  openSheet(`<div class="row"><h3 class="grow">${mode === 'swap' ? `Swap ${esc(cur)}` : 'Add exercise'}</h3>
+      <button class="ghost" data-act="sclose">Cancel</button></div>
+    <p class="mac">Only changes today's workout. New exercises are tracked in Exercise progress.</p>
+    <label>New exercise</label>
+    <input id="nx-name" placeholder="e.g. Cable crossover" autocapitalize="words">
+    <div class="row" style="margin-top:8px">
+      <div class="grow"><label style="margin-top:0">Reps min</label><input id="nx-min" inputmode="numeric" pattern="[0-9]*" value="8"></div>
+      <div class="grow"><label style="margin-top:0">Reps max</label><input id="nx-max" inputmode="numeric" pattern="[0-9]*" value="12"></div>
+    </div>
+    <button class="primary" data-act="pnew" style="width:100%;margin-top:10px">${mode === 'swap' ? 'Swap in' : 'Add'} new exercise</button>
+    ${groups.filter(g => g[1]).map(([name, html]) => `<label>${esc(name)}</label><div class="pick">${html}</div>`).join('')}`);
+}
+async function applyPick(e) {
+  const D = S.draft, { mode, ei } = picker;
+  if (D.entries.some(en => en.exId === e.id)) { toast(`${e.name} is already in today's workout`); return; }
+  if (mode === 'swap') {
+    const old = D.entries[ei];
+    if (old.sets.some(x => num(x.r) > 0) && !(await ask(`Swap out ${old.name}? Sets you logged for it today will be dropped.`, 'Swap'))) return;
+    D.entries[ei] = makeEntry(e);
+  } else D.entries.push(makeEntry(e));
+  picker = null; save(); closeSheet(); render();
+  toast(mode === 'swap' ? `⇄ Swapped in ${e.name}` : `+ Added ${e.name}`);
 }
 
 async function finishWorkout() {
@@ -741,7 +880,7 @@ async function finishWorkout() {
   if (!entries.length) { if (!(await ask('No sets logged. Discard this workout?', 'Discard'))) return; }
   else S.sessions.push({ id: uid(), date: dkey(), dayId: d.dayId, dayName: dayById(d.dayId)?.name, entries });
   const n = entries.reduce((a, e) => a + e.sets.length, 0);
-  S.draft = null; stopTimer(); save(); render(); window.scrollTo(0, 0);
+  S.draft = null; wReorder = false; stopTimer(); save(); render(); window.scrollTo(0, 0);
   if (n) toast(`💪 Saved: ${n} sets`);
   const ups = entries.map(en => ({ en, e: exById(en.exId) })).filter(x => earnedIncrease(x.e, x.en.sets));
   if (ups.length) ask('🔥 Go up in weight next time:\n\n' +
@@ -749,17 +888,54 @@ async function finishWorkout() {
 }
 
 function logEntry(e) {
-  const k = dkey();
+  const k = fday();
   (S.food[k] = S.food[k] || []).push(e);
   save(); render();
   const p = sumDay(k).p, g = S.settings.goals.p;
   toast(p >= g ? `✅ Protein goal hit: ${r0(p)}g` : `+${r0(e.p)}g protein → ${r0(p)}g`);
 }
 
+// ----- edit a logged food item (any day) -----
+let sheetEntry = null;
+function openEntry(i) {
+  const e = S.food[fday()][i]; sheetEntry = i;
+  const lbl = e.unit === 'q' ? 'Protein (g)' : e.unit === 'g' ? 'Amount (grams)' : `How many (${esc(e.label || 'item')})`;
+  openSheet(`<h3>${esc(e.name)}</h3><p class="mac">${nice(fday())}</p>
+    <label>${lbl}</label><input id="eamt" inputmode="decimal" value="${r1(e.amt)}">
+    <div class="prev" id="eprev"></div>
+    <div class="row"><button class="grow danger" data-act="edel">Delete</button><button class="grow primary" data-act="esave">Save</button></div>`);
+  updateEPrev();
+}
+const entryScaled = (e, amt) => { const r = e.amt ? amt / e.amt : 0; return { kcal: e.kcal * r, p: e.p * r, c: e.c * r, f: e.f * r }; };
+function updateEPrev() {
+  const el = document.getElementById('eprev'); if (!el || sheetEntry === null) return;
+  const m = entryScaled(S.food[fday()][sheetEntry], num(document.getElementById('eamt').value));
+  el.innerHTML = [['p', 'protein'], ['c', 'carbs'], ['f', 'fat'], ['kcal', 'kcal']]
+    .map(([k, l]) => `<div><b>${r0(m[k])}${k === 'kcal' ? '' : 'g'}</b><span>${l}</span></div>`).join('');
+}
+
+// ----- all-time food log -----
+function openHistory() {
+  const G = S.settings.goals;
+  const tots = Object.keys(S.food).filter(k => (S.food[k] || []).length).sort().map(k => ({ k, t: sumDay(k) }));
+  const head = `<div class="row"><h3 class="grow">All-time food log</h3><button class="ghost" data-act="sclose">Close</button></div>`;
+  if (!tots.length) { openSheet(head + '<p class="muted">Nothing logged yet.</p>'); return; }
+  const avg = f => r0(tots.reduce((a, x) => a + x.t[f], 0) / tots.length);
+  const hit = tots.filter(x => x.t.p >= G.p).length;
+  const stat = (lbl, v) => `<div><b>${v}</b><span>${lbl}</span></div>`;
+  openSheet(`${head}
+    <div class="prev">${stat('days logged', tots.length)}${stat('avg protein', avg('p') + 'g')}${stat('avg kcal', avg('kcal'))}${stat('protein goal hit', hit + '/' + tots.length)}</div>
+    <p class="mac">Daily protein (g)${tots.length > 90 ? ' · last 90 days' : ''}</p>
+    ${chart(tots.slice(-90).map(x => ({ y: x.t.p, label: short(x.k) })), 'g')}
+    <ul class="list" style="margin-top:8px">${tots.slice().reverse().map(x => `<li data-act="fday" data-k="${x.k}" style="cursor:pointer">
+      <span class="grow">${nice(x.k)}<br><span class="mac">${macText(x.t)}</span></span><span class="muted">›</span></li>`).join('')}</ul>
+    <p class="mac">Tap a day to view or edit it.</p>`);
+}
+
 // ----- food sheet -----
 let sheetFood = null, sheetSrc = '';
-function openSheet(html) { document.getElementById('sheetbox').innerHTML = html; document.getElementById('sheet').classList.add('show'); }
-function closeSheet() { document.getElementById('sheet').classList.remove('show'); sheetFood = null; }
+function openSheet(html) { const b = document.getElementById('sheetbox'); b.innerHTML = html; addClears(b); b.scrollTop = 0; document.getElementById('sheet').classList.add('show'); }
+function closeSheet() { document.getElementById('sheet').classList.remove('show'); sheetFood = null; sheetEntry = null; picker = null; }
 const scaled = (f, amt) => { const m = f.unit === 'g' ? amt / 100 : amt;
   return { kcal: f.kcal * m, p: f.p * m, c: f.c * m, f: f.f * m }; };
 
@@ -921,8 +1097,16 @@ function exportData() {
 
 document.addEventListener('click', ev => {
   const nb = ev.target.closest('nav button');
-  if (nb) { leaveEdit().then(ok => { if (ok) { tab = nb.dataset.tab; render(); window.scrollTo(0, 0); } }); return; }
+  if (nb) { leaveEdit().then(ok => { if (ok) { tab = nb.dataset.tab; foodDate = null; render(); window.scrollTo(0, 0); } }); return; }
   if (ev.target.id === 'sheet') { closeSheet(); return; }
+  const cx = ev.target.closest('.clrx');
+  if (cx) {
+    const inp = cx.previousElementSibling;
+    inp.value = ''; inp.dispatchEvent(new Event('input', { bubbles: true }));
+    const again = inp.id && document.getElementById(inp.id); // the box may have been re-drawn
+    (again || inp).focus();
+    return;
+  }
   const b = ev.target.closest('[data-act]');
   if (!b) return;
   const a = b.dataset.act, D = S.draft;
@@ -958,12 +1142,59 @@ document.addEventListener('click', ev => {
     }
     case 'rmset': D.entries[ei].sets.splice(si, 1); save(); render(); break;
     case 'finish': finishWorkout(); break;
-    case 'discard': ask('Discard this workout? Nothing will be saved.', 'Discard').then(ok => { if (ok) { S.draft = null; stopTimer(); save(); render(); window.scrollTo(0, 0); } }); break;
+    case 'discard': ask('Discard this workout? Nothing will be saved.', 'Discard').then(ok => { if (ok) { S.draft = null; wReorder = false; stopTimer(); save(); render(); window.scrollTo(0, 0); } }); break;
     case 't-add': timerEnd += 30000; beeped = false; tick(); break;
     case 't-stop': stopTimer(); break;
     case 'qadd': logEntry(quickEntry(+b.dataset.g)); break;
     case 'qadd-custom': { const g = Math.round(num(document.getElementById('qcustom').value)); if (g > 0) logEntry(quickEntry(g)); break; }
-    case 'ldel': S.food[dkey()].splice(+b.dataset.i, 1); save(); render(); break;
+    case 'ldel': S.food[fday()].splice(+b.dataset.i, 1); save(); render(); break;
+    case 'ledit': openEntry(+b.dataset.i); break;
+    case 'esave': {
+      const e = S.food[fday()][sheetEntry], amt = num(document.getElementById('eamt').value);
+      if (amt <= 0) { toast('Enter an amount, or tap Delete'); break; }
+      Object.assign(e, entryScaled(e, amt), { amt }); save(); closeSheet(); render(); toast('Saved'); break;
+    }
+    case 'edel': S.food[fday()].splice(sheetEntry, 1); save(); closeSheet(); render(); toast('Deleted'); break;
+    case 'ftoday': foodDate = null; render(); window.scrollTo(0, 0); break;
+    case 'fday': {
+      foodDate = b.dataset.k === dkey() ? null : b.dataset.k; closeSheet(); tab = 'food'; render();
+      document.getElementById('daylog')?.scrollIntoView(); window.scrollBy(0, -10); break;
+    }
+    case 'fhist': openHistory(); break;
+    case 'wadd': openPicker('add'); break;
+    case 'xadd': {
+      let name = 'New exercise', n = 2;
+      while (findByName(name)) name = `New exercise ${n++}`;
+      S.extras.push(ex(name)); save(); render(); break;
+    }
+    case 'xdel': {
+      const e = S.extras[+b.dataset.x];
+      ask(`Remove ${e.name} from your list? Past workouts keep their sets.`, 'Remove').then(ok => {
+        if (!ok) return;
+        S.extras = S.extras.filter(x => x !== e);
+        S.hiddenEx.push(e.id); // keep history, just don't list it again
+        save(); render(); });
+      break;
+    }
+    case 'wreorder': wReorder = !wReorder; render(); window.scrollTo(0, 0); break;
+    case 'wswap': openPicker('swap', ei); break;
+    case 'wrm': {
+      const en = D.entries[ei];
+      ask(`Remove ${en.name} from today's workout?`, 'Remove').then(ok => {
+        if (ok) { D.entries.splice(D.entries.indexOf(en), 1); save(); render(); } });
+      break;
+    }
+    case 'ppick': applyPick(exById(b.dataset.id)); break;
+    case 'pnew': {
+      const name = document.getElementById('nx-name').value.trim();
+      if (!name) { toast('Type a name for the new exercise'); break; }
+      let min = Math.round(num(document.getElementById('nx-min').value)) || 8;
+      let max = Math.round(num(document.getElementById('nx-max').value)) || 12;
+      if (max < min) [min, max] = [max, min];
+      const same = findByName(name);
+      if (same) { toast(`Using your existing ${same.name}`); applyPick(same); break; }
+      const e = ex(name, min, max, 5); S.extras.push(e); applyPick(e); break;
+    }
     case 'goals': {
       const G = S.settings.goals;
       for (const k of ['kcal', 'p', 'c', 'f']) { const v = Math.round(num(document.getElementById('goal-' + k).value)); if (v > 0) G[k] = v; }
@@ -996,7 +1227,6 @@ document.addEventListener('click', ev => {
     }
     case 'sclose': closeSheet(); break;
     case 'fsearch': runSearch(); break;
-    case 'fclear': search = { q: '', state: '', results: [] }; render(); break;
     case 'wsave': {
       const lb = num(document.getElementById('wlb').value);
       if (lb <= 0) { toast('Enter your weight in lb'); break; }
@@ -1009,16 +1239,10 @@ document.addEventListener('click', ev => {
       const d = S.days[+b.dataset.d], e = d.exercises[+b.dataset.x];
       ask(`Remove ${e.name} from ${d.name}? Past workouts keep their data.`, 'Remove').then(ok => {
         if (!ok) return;
-        openDay = +b.dataset.d; d.exercises.splice(d.exercises.indexOf(e), 1); save(); render(); });
+        openDay = +b.dataset.d; d.exercises.splice(d.exercises.indexOf(e), 1); normalizeExercises(); save(); render(); });
       break;
     }
     case 'reorder': openDay = +b.dataset.d; reorderDay = reorderDay === openDay ? null : openDay; render(); break;
-    case 'exmove': {
-      const list = S.days[+b.dataset.d].exercises, i = +b.dataset.x, j = i + +b.dataset.dir;
-      if (j < 0 || j >= list.length) break;
-      [list[i], list[j]] = [list[j], list[i]];
-      openDay = +b.dataset.d; save(); render(); break;
-    }
     case 'quote': quoteIdx = (quoteIdx + 1 + Math.floor(Math.random() * (QUOTES.length - 1))) % QUOTES.length; render(); break;
     case 'sopen': openEdit(b.dataset.id); tab = 'train'; render(); window.scrollTo(0, 0); break;
     case 'sedit-back': leaveEdit().then(ok => { if (ok) { render(); window.scrollTo(0, 0); } }); break;
@@ -1051,6 +1275,10 @@ document.addEventListener('input', ev => {
     if (v !== t.value) t.value = v;
   }
   if (t.id === 'amt') { updatePrev(); return; }
+  if (t.id === 'eamt') { updateEPrev(); return; }
+  if (t.id === 'fq' && !t.value && (search.q || search.results.length || search.state)) {
+    search = { q: '', state: '', results: [] }; render(); return; // cleared: show Recent again
+  }
   if (t.id === 'ff-unit') { document.getElementById('ff-labelwrap').style.display = t.value === 'g' ? 'none' : ''; return; }
   if (!k) return;
   if (k === 'hw' || k === 'hr') {
@@ -1058,6 +1286,8 @@ document.addEventListener('input', ev => {
   } else if (k === 'sdate') { if (/^\d{4}-\d{2}-\d{2}$/.test(t.value)) { ED.date = t.value; ED.dirty = true; } return; }
   else if (k === 'w' || k === 'r') { S.draft.entries[+t.dataset.e].sets[+t.dataset.s][k] = t.value; }
   else if (k === 'dayname') S.days[+t.dataset.d].name = t.value;
+  else if (k === 'xname') S.extras[+t.dataset.x].name = t.value;
+  else if (k === 'xmin' || k === 'xmax' || k === 'xinc') { const v = num(t.value); if (v > 0) S.extras[+t.dataset.x][{ xmin: 'min', xmax: 'max', xinc: 'inc' }[k]] = v; }
   else if (k.startsWith('ex')) {
     const e = S.days[+t.dataset.d].exercises[+t.dataset.x];
     if (k === 'exname') e.name = t.value;
@@ -1067,6 +1297,11 @@ document.addEventListener('input', ev => {
 });
 
 document.addEventListener('change', ev => {
+  const k = ev.target.dataset.in;
+  if (k === 'xname' || k === 'exname') {
+    if (normalizeExercises()) { save(); render(); toast('Merged with the existing exercise of that name'); }
+    return;
+  }
   if (ev.target.id !== 'importFile') return;
   const f = ev.target.files[0]; if (!f) return;
   f.text().then(async txt => {
@@ -1074,18 +1309,18 @@ document.addEventListener('change', ev => {
     if (!data.days || !data.sessions) throw new Error('bad file');
     if (!(await ask('Replace ALL current data with this backup?', 'Replace'))) return;
     const key = S.settings.usdaKey;
-    S = migrate(data); if (key) S.settings.usdaKey = key; save(); render(); toast('Backup restored');
+    S = migrate(data); if (key) S.settings.usdaKey = key; normalizeExercises(); save(); render(); toast('Backup restored');
   }).catch(() => toast('That file is not a Lift Log backup'));
   ev.target.value = '';
 });
 
-// Drag-to-reorder for My foods (pointer events work for both touch and mouse).
+// Drag-to-reorder for My foods and split exercises (pointer events work for touch and mouse).
 let drag = null;
 document.addEventListener('pointerdown', ev => {
-  const h = ev.target.closest('.foods.reorder .handle');
+  const h = ev.target.closest('.reorder .handle');
   if (!h) return;
   ev.preventDefault();
-  drag = h.closest('button');
+  drag = h.closest('[data-rid]');
   drag.classList.add('lifted');
   h.setPointerCapture(ev.pointerId);
 });
@@ -1095,15 +1330,19 @@ document.addEventListener('pointermove', ev => {
   // scroll when dragging near the top/bottom of the screen
   if (ev.clientY < 90) window.scrollBy(0, -12);
   else if (ev.clientY > innerHeight - 130) window.scrollBy(0, 12);
-  const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.foods.reorder button');
-  if (!over || over === drag) return;
-  const tiles = [...drag.parentNode.children];
-  if (tiles.indexOf(drag) < tiles.indexOf(over)) over.after(drag); else over.before(drag);
+  const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-rid]');
+  if (!over || over === drag || over.parentNode !== drag.parentNode) return;
+  const items = [...drag.parentNode.children];
+  if (items.indexOf(drag) < items.indexOf(over)) over.after(drag); else over.before(drag);
 });
 const endDrag = () => {
   if (!drag) return;
-  const order = [...drag.parentNode.children].map(b => b.dataset.fid);
-  S.foods.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  const box = drag.parentNode;
+  const order = [...box.children].map(x => x.dataset.rid);
+  const kind = box.dataset.kind;
+  const list = kind === 'ex' ? S.days[+box.dataset.d].exercises : kind === 'draft' ? S.draft.entries : S.foods;
+  const idOf = x => kind === 'draft' ? x.exId : x.id;
+  list.sort((a, b) => order.indexOf(idOf(a)) - order.indexOf(idOf(b)));
   drag = null; save(); render();
 };
 document.addEventListener('pointerup', endDrag);
@@ -1115,9 +1354,12 @@ document.addEventListener('keydown', ev => {
   if (ev.target.id === 'qcustom') document.querySelector('[data-act="qadd-custom"]').click();
   if (ev.target.id === 'fq') { ev.preventDefault(); ev.target.blur(); runSearch(); }
   if (ev.target.id === 'amt') document.querySelector('[data-act="fadd"]').click();
+  if (ev.target.id === 'eamt') document.querySelector('[data-act="esave"]').click();
+  if (ev.target.id === 'nx-name') document.querySelector('[data-act="pnew"]').click();
   if (ev.target.id === 'wlb') document.querySelector('[data-act="wsave"]').click();
 });
 
+normalizeExercises(); save(); // one entry per exercise name
 // if the app was closed mid-workout, resume on the Train tab
 render();
 
