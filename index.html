@@ -579,8 +579,8 @@ function viewTrain() {
       ${next ? `<p class="muted">Next up in your split</p>
       <button class="primary big" data-act="start" data-id="${next.id}">Start ${esc(next.name)}</button>
       ${readyCount(next) ? `<p class="upb" style="text-align:center">${readyText(readyCount(next))}</p>` : ''}` : ''}
-      <h2>Or pick a day</h2>
-      <div class="days">${S.days.map(x => `<button data-act="start" data-id="${x.id}">${esc(x.name)}<small>${lastDone(x.id)}</small>${readyCount(x) ? `<small class="upb">${readyText(readyCount(x))}</small>` : ''}</button>`).join('')}</div>
+      ${dayReorderHead('Or pick a day')}
+      ${dayReorder ? dayReorderList() : `<div class="days">${S.days.map(x => `<button data-act="start" data-id="${x.id}">${esc(x.name)}<small>${lastDone(x.id)}</small>${readyCount(x) ? `<small class="upb">${readyText(readyCount(x))}</small>` : ''}</button>`).join('')}</div>`}
       ${S.sessions.length ? `<h2>Recent</h2><div class="card"><ul class="list">${S.sessions.slice(-5).reverse().map(s =>
         `<li data-act="sopen" data-id="${s.id}" style="cursor:pointer"><span class="grow">${esc(dayById(s.dayId)?.name || s.dayName || 'Workout')}<br>
           <span class="muted">${setCount(s)}</span></span><span class="muted">${nice(s.date)}</span><span class="muted">›</span></li>`).join('')}</ul></div>
@@ -738,9 +738,9 @@ function viewPersonal() {
 function viewMore() {
   return `<h1>Settings</h1>
 
-    <h2>Your split</h2>
-    <p class="muted">Edit exercises, rep ranges, and how much weight to add (+lb) when you hit the top of the range.</p>
-    ${S.days.map((d, di) => `<details class="card" ${di === openDay ? 'open' : ''}><summary>${esc(d.name)} · ${d.exercises.length} exercises</summary>
+    ${dayReorderHead('Your split')}
+    ${dayReorder ? dayReorderList() : `<p class="muted">Edit exercises, rep ranges, and how much weight to add (+lb) when you hit the top of the range.</p>`}
+    ${dayReorder ? '' : S.days.map((d, di) => `<details class="card" ${di === openDay ? 'open' : ''}><summary>${esc(d.name)} · ${d.exercises.length} exercises</summary>
       ${di === reorderDay ? `<p class="muted">Drag the ≡ handle to move an exercise.</p>
       <div class="reorder" data-kind="ex" data-d="${di}">${d.exercises.map(e => `<div class="exrow" data-rid="${e.id}">
         <span class="grow">${esc(e.name)}</span><span class="handle" aria-label="Drag to move">≡</span></div>`).join('')}</div>
@@ -844,6 +844,12 @@ function startWorkout(dayId) {
 // Pick an exercise to add to (or swap into) today's workout only.
 let picker = null; // { mode: 'add' | 'swap', ei }
 let wReorder = false; // reordering today's workout
+let dayReorder = false; // reordering the split's days (Train tab or Settings)
+const dayReorderHead = title => `<div class="h2row"><h2>${title}</h2>
+  <button class="${dayReorder ? 'primary' : 'ghost'}" data-act="dreorder">${dayReorder ? 'Done' : '↕ Reorder'}</button></div>`;
+const dayReorderList = () => `<p class="muted">Drag the ≡ handle to change the order of your days. "Next up" follows this order.</p>
+  <div class="reorder" data-kind="days">${S.days.map(d => `<div class="exrow" data-rid="${d.id}"><span class="grow">${esc(d.name)}
+    <small class="mac" style="display:block">${d.exercises.length} exercises</small></span><span class="handle" aria-label="Drag to move">≡</span></div>`).join('')}</div>`;
 function openPicker(mode, ei) {
   picker = { mode, ei };
   const inUse = new Set(S.draft.entries.map(en => en.exId));
@@ -1182,7 +1188,7 @@ function exportData() {
 
 document.addEventListener('click', ev => {
   const nb = ev.target.closest('nav button');
-  if (nb) { leaveEdit().then(ok => { if (ok) { tab = nb.dataset.tab; foodDate = null; render(); window.scrollTo(0, 0); } }); return; }
+  if (nb) { leaveEdit().then(ok => { if (ok) { tab = nb.dataset.tab; foodDate = null; dayReorder = false; render(); window.scrollTo(0, 0); } }); return; }
   if (ev.target.id === 'sheet') { closeSheet(); return; }
   const cx = ev.target.closest('.clrx');
   if (cx) {
@@ -1261,6 +1267,7 @@ document.addEventListener('click', ev => {
         save(); render(); });
       break;
     }
+    case 'dreorder': dayReorder = !dayReorder; openDay = reorderDay = null; render(); break;
     case 'wreorder': wReorder = !wReorder; render(); window.scrollTo(0, 0); break;
     case 'wswap': openPicker('swap', ei); break;
     case 'wrm': {
@@ -1427,7 +1434,7 @@ const endDrag = () => {
   const box = drag.parentNode;
   const order = [...box.children].map(x => x.dataset.rid);
   const kind = box.dataset.kind;
-  const list = kind === 'ex' ? S.days[+box.dataset.d].exercises : kind === 'draft' ? S.draft.entries : S.foods;
+  const list = kind === 'ex' ? S.days[+box.dataset.d].exercises : kind === 'draft' ? S.draft.entries : kind === 'days' ? S.days : S.foods;
   const idOf = x => kind === 'draft' ? x.exId : x.id;
   list.sort((a, b) => order.indexOf(idOf(a)) - order.indexOf(idOf(b)));
   drag = null; save(); render();
